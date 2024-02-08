@@ -49,14 +49,28 @@ struct UA_CertificateVerification {
     UA_StatusCode (*getExpirationDate)(UA_DateTime *expiryDateTime, 
                                        UA_ByteString *certificate);
 
+    UA_StatusCode (*getSubjectName)(UA_String *subjectName,
+                                    UA_ByteString *certificate);
+
     /* Delete the certificate verification context */
     void (*clear)(UA_CertificateVerification *cv);
 
-    /* Pointer to logging pointer in the server/client configuration.
-       If the logging pointer is changed outside of the plugin, the new
-       logger is used automatically*/
-    UA_Logger **logging;
+    /* Pointer to logging pointer in the server/client configuration. If the
+     * logging pointer is changed outside of the plugin, the new logger is used
+     * automatically*/
+    const UA_Logger *logging;
 };
+
+/* Decrypt a private key in PEM format using a password. The output is the key
+ * in the binary DER format. Also succeeds if the PEM private key does not
+ * require a password or is already in the DER format. The outDerKey memory is
+ * allocated internally.
+ *
+ * Returns UA_STATUSCODE_BADSECURITYCHECKSFAILED if the password is wrong. */
+UA_EXPORT UA_StatusCode
+UA_PKI_decryptPrivateKey(const UA_ByteString privateKey,
+                         const UA_ByteString password,
+                         UA_ByteString *outDerKey);
 
 _UA_END_DECLS
 

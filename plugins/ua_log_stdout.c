@@ -13,7 +13,7 @@
 /* ANSI escape sequences for color output taken from here:
  * https://stackoverflow.com/questions/3219393/stdlib-and-colored-output-in-c*/
 
-#ifdef UA_ENABLE_LOG_COLORS
+#ifdef UA_ARCHITECTURE_POSIX
 # define ANSI_COLOR_RED     "\x1b[31m"
 # define ANSI_COLOR_GREEN   "\x1b[32m"
 # define ANSI_COLOR_YELLOW  "\x1b[33m"
@@ -31,12 +31,14 @@
 # define ANSI_COLOR_RESET   ""
 #endif
 
+static
 const char *logLevelNames[6] = {"trace", "debug",
                                 ANSI_COLOR_GREEN "info",
                                 ANSI_COLOR_YELLOW "warn",
                                 ANSI_COLOR_RED "error",
                                 ANSI_COLOR_MAGENTA "fatal"};
-const char *logCategoryNames[UA_LOGCATEGORIES] =
+static const char *
+logCategoryNames[UA_LOGCATEGORIES] =
     {"network", "channel", "session", "server", "client",
      "userland", "securitypolicy", "eventloop", "pubsub", "discovery"};
 

@@ -31,7 +31,7 @@ generateEventId(UA_ByteString *generatedId) {
 UA_StatusCode
 createEvent(UA_Server *server, const UA_NodeId eventType, UA_NodeId *outNodeId) {
     if(!outNodeId) {
-        UA_LOG_ERROR(&server->config.logger, UA_LOGCATEGORY_USERLAND,
+        UA_LOG_ERROR(server->config.logging, UA_LOGCATEGORY_USERLAND,
                      "outNodeId must not be NULL. The event's NodeId must be returned "
                      "so it can be triggered.");
         return UA_STATUSCODE_BADINVALIDARGUMENT;
@@ -41,7 +41,7 @@ createEvent(UA_Server *server, const UA_NodeId eventType, UA_NodeId *outNodeId) 
     UA_NodeId baseEventTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_BASEEVENTTYPE);
     if(!isNodeInTree_singleRef(server, &eventType, &baseEventTypeId,
                                UA_REFERENCETYPEINDEX_HASSUBTYPE)) {
-        UA_LOG_ERROR(&server->config.logger, UA_LOGCATEGORY_USERLAND,
+        UA_LOG_ERROR(server->config.logging, UA_LOGCATEGORY_USERLAND,
                      "Event type must be a subtype of BaseEventType!");
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     }
@@ -63,7 +63,7 @@ createEvent(UA_Server *server, const UA_NodeId eventType, UA_NodeId *outNodeId) 
                                    NULL,           /* no node context */
                                    &newNodeId);
     if(retval != UA_STATUSCODE_GOOD) {
-        UA_LOG_ERROR(&server->config.logger, UA_LOGCATEGORY_USERLAND,
+        UA_LOG_ERROR(server->config.logging, UA_LOGCATEGORY_USERLAND,
                      "Adding event failed. StatusCode %s", UA_StatusCode_name(retval));
         return retval;
     }
@@ -133,7 +133,9 @@ eventSetStandardFields(UA_Server *server, const UA_NodeId *event,
         UA_BrowsePathResult_clear(&bpr);
         return retval;
     }
-    UA_DateTime rcvTime = UA_DateTime_now();
+
+    UA_EventLoop *el = server->config.eventLoop;
+    UA_DateTime rcvTime = el->dateTime_now(el);
     UA_Variant_setScalar(&value, &rcvTime, &UA_TYPES[UA_TYPES_DATETIME]);
     retval = writeValueAttribute(server, bpr.targets[0].targetId.nodeId, &value);
     UA_BrowsePathResult_clear(&bpr);
@@ -176,24 +178,29 @@ eventSetStandardFields(UA_Server *server, const UA_NodeId *event,
 UA_StatusCode
 UA_MonitoredItem_addEvent(UA_Server *server, UA_MonitoredItem *mon,
                           const UA_NodeId *event) {
-    UA_Notification *notification = UA_Notification_new();
-    if(!notification)
-        return UA_STATUSCODE_BADOUTOFMEMORY;
-
+    /* Get the filter */
     if(mon->parameters.filter.content.decoded.type != &UA_TYPES[UA_TYPES_EVENTFILTER])
         return UA_STATUSCODE_BADFILTERNOTALLOWED;
     UA_EventFilter *eventFilter = (UA_EventFilter*)
         mon->parameters.filter.content.decoded.data;
 
+    /* Allocate memory for the notification */
+    UA_Notification *notification = UA_Notification_new();
+    if(!notification)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+
     /* The MonitoredItem must be attached to a Subscription. This code path is
      * not taken for local MonitoredItems (once they are enabled for Events). */
+    UA_assert(mon->subscription);
     UA_Subscription *sub = mon->subscription;
-    UA_assert(sub);
-
     UA_Session *session = sub->session;
-    UA_StatusCode retval = filterEvent(server, session, event,
-                                       eventFilter, &notification->data.event,
-                                       &notification->result);
+
+    UA_EventFilterResult res; /* FilterResult contains only statuscodes. Ignored
+                               * outside the initial setup/validation. */
+    UA_EventFilterResult_init(&res);
+    UA_StatusCode retval = filterEvent(server, session, event, eventFilter,
+                                       &notification->data.event, &res);
+    UA_EventFilterResult_clear(&res);
     if(retval != UA_STATUSCODE_GOOD) {
         UA_Notification_delete(notification);
         if(retval == UA_STATUSCODE_BADNOMATCH)
@@ -223,7 +230,7 @@ setHistoricalEvent(UA_Server *server, const UA_NodeId *origin,
     if(retval != UA_STATUSCODE_GOOD) {
         /* Do not vex users with no match errors */
         if(retval != UA_STATUSCODE_BADNOMATCH)
-            UA_LOG_WARNING(&server->config.logger, UA_LOGCATEGORY_SERVER,
+            UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
                            "Cannot read the HistoricalEventFilter property of a "
                            "listening node. StatusCode %s",
                            UA_StatusCode_name(retval));
@@ -234,7 +241,7 @@ setHistoricalEvent(UA_Server *server, const UA_NodeId *origin,
     if(UA_Variant_isEmpty(&historicalEventFilterValue) ||
        !UA_Variant_isScalar(&historicalEventFilterValue) ||
        historicalEventFilterValue.type != &UA_TYPES[UA_TYPES_EVENTFILTER]) {
-        UA_LOG_WARNING(&server->config.logger, UA_LOGCATEGORY_SERVER,
+        UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
                        "HistoricalEventFilter property of a listening node "
                        "does not have a valid value");
         UA_Variant_clear(&historicalEventFilterValue);
@@ -274,7 +281,7 @@ triggerEvent(UA_Server *server, const UA_NodeId eventNodeId,
     UA_LOCK_ASSERT(&server->serviceMutex, 1);
 
     UA_LOG_NODEID_DEBUG(&origin,
-        UA_LOG_DEBUG(&server->config.logger, UA_LOGCATEGORY_SERVER,
+        UA_LOG_DEBUG(server->config.logging, UA_LOGCATEGORY_SERVER,
             "Events: An event is triggered on node %.*s",
             (int)nodeIdStr.length, nodeIdStr.data));
 
@@ -282,7 +289,7 @@ triggerEvent(UA_Server *server, const UA_NodeId eventNodeId,
     UA_Boolean isCallerAC = false;
     if(isConditionOrBranch(server, &eventNodeId, &origin, &isCallerAC)) {
         if(!isCallerAC) {
-          UA_LOG_WARNING(&server->config.logger, UA_LOGCATEGORY_SERVER,
+          UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
                                  "Condition Events: Please use A&C API to trigger Condition Events 0x%08X",
                                   UA_STATUSCODE_BADINVALIDARGUMENT);
           return UA_STATUSCODE_BADINVALIDARGUMENT;
@@ -293,7 +300,7 @@ triggerEvent(UA_Server *server, const UA_NodeId eventNodeId,
     /* Check that the origin node exists */
     const UA_Node *originNode = UA_NODESTORE_GET(server, &origin);
     if(!originNode) {
-        UA_LOG_ERROR(&server->config.logger, UA_LOGCATEGORY_USERLAND,
+        UA_LOG_ERROR(server->config.logging, UA_LOGCATEGORY_USERLAND,
                      "Origin node for event does not exist.");
         return UA_STATUSCODE_BADNOTFOUND;
     }
@@ -308,7 +315,7 @@ triggerEvent(UA_Server *server, const UA_NodeId eventNodeId,
         UA_ReferenceTypeSet tmpRefTypes;
         retval = referenceTypeIndices(server, &isInFolderReferences[i], &tmpRefTypes, true);
         if(retval != UA_STATUSCODE_GOOD) {
-            UA_LOG_WARNING(&server->config.logger, UA_LOGCATEGORY_SERVER,
+            UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
                            "Events: Could not create the list of references and their subtypes "
                            "with StatusCode %s", UA_StatusCode_name(retval));
         }
@@ -316,7 +323,7 @@ triggerEvent(UA_Server *server, const UA_NodeId eventNodeId,
     }
 
     if(!isNodeInTree(server, &origin, &objectsFolderId, &refTypes)) {
-        UA_LOG_ERROR(&server->config.logger, UA_LOGCATEGORY_USERLAND,
+        UA_LOG_ERROR(server->config.logging, UA_LOGCATEGORY_USERLAND,
                      "Node for event must be in ObjectsFolder!");
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     }
@@ -324,7 +331,7 @@ triggerEvent(UA_Server *server, const UA_NodeId eventNodeId,
     /* Update the standard fields of the event */
     retval = eventSetStandardFields(server, &eventNodeId, &origin, outEventId);
     if(retval != UA_STATUSCODE_GOOD) {
-        UA_LOG_WARNING(&server->config.logger, UA_LOGCATEGORY_SERVER,
+        UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
                        "Events: Could not set the standard event fields with StatusCode %s",
                        UA_StatusCode_name(retval));
         return retval;
@@ -353,7 +360,7 @@ triggerEvent(UA_Server *server, const UA_NodeId eventNodeId,
         UA_ReferenceTypeSet tmpRefTypes;
         retval = referenceTypeIndices(server, &emitReferencesRoots[i], &tmpRefTypes, true);
         if(retval != UA_STATUSCODE_GOOD) {
-            UA_LOG_WARNING(&server->config.logger, UA_LOGCATEGORY_SERVER,
+            UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
                            "Events: Could not create the list of references for event "
                            "propagation with StatusCode %s", UA_StatusCode_name(retval));
             goto cleanup;
@@ -366,7 +373,7 @@ triggerEvent(UA_Server *server, const UA_NodeId eventNodeId,
                              &emitRefTypes, UA_NODECLASS_UNSPECIFIED, true,
                              &emitNodesSize, &emitNodes);
     if(retval != UA_STATUSCODE_GOOD) {
-        UA_LOG_WARNING(&server->config.logger, UA_LOGCATEGORY_SERVER,
+        UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
                        "Events: Could not create the list of nodes listening on the "
                        "event with StatusCode %s", UA_StatusCode_name(retval));
         goto cleanup;
@@ -393,7 +400,7 @@ triggerEvent(UA_Server *server, const UA_NodeId eventNodeId,
                 continue;
             retval = UA_MonitoredItem_addEvent(server, mon, &eventNodeId);
             if(retval != UA_STATUSCODE_GOOD) {
-                UA_LOG_WARNING(&server->config.logger, UA_LOGCATEGORY_SERVER,
+                UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
                                "Events: Could not add the event to a listening "
                                "node with StatusCode %s", UA_StatusCode_name(retval));
                 retval = UA_STATUSCODE_GOOD; /* Only log problems with individual emit nodes */
@@ -413,7 +420,7 @@ triggerEvent(UA_Server *server, const UA_NodeId eventNodeId,
     if(deleteEventNode) {
         retval = deleteNode(server, eventNodeId, true);
         if(retval != UA_STATUSCODE_GOOD) {
-            UA_LOG_WARNING(&server->config.logger, UA_LOGCATEGORY_SERVER,
+            UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
                            "Attempt to remove event using deleteNode failed. StatusCode %s",
                            UA_StatusCode_name(retval));
         }

@@ -306,6 +306,19 @@ UA_StatusCode retVal = UA_STATUSCODE_GOOD;""" % (outfilebase))
         nsid = nsid.replace("\"", "\\\"")
         writec("ns[" + str(i) + "] = UA_Server_addNamespace(server, \"" + nsid + "\");")
 
+    # Change namespaceIndex from the current namespace,
+    # but only if it defines its own data types, otherwise it is not necessary.
+    if len(typesArray) > 0:
+        typeArr = typesArray[-1]
+        if typeArr != "UA_TYPES" and typeArr != "ns0":
+            writec("/* Change namespaceIndex from current namespace */")
+            writec("#if " + typeArr + "_COUNT" + " > 0")
+            writec("for(int i = 0; i < " + typeArr + "_COUNT" + "; i++) {")
+            writec(typeArr + "[i]" + ".typeId.namespaceIndex = ns[" + str(nodeset.namespaceMapping[1]) + "];")
+            writec(typeArr + "[i]" + ".binaryEncodingId.namespaceIndex = ns[" + str(nodeset.namespaceMapping[1]) + "];")
+            writec("}")
+            writec("#endif")
+
     # Add generated types to the server
     writec("\n/* Load custom datatype definitions into the server */")
     for arr in typesArray:
@@ -318,17 +331,17 @@ UA_StatusCode retVal = UA_STATUSCODE_GOOD;""" % (outfilebase))
 
     if functionNumber > 0:
         for i in range(0, functionNumber):
-            writec("if((retVal = function_{outfilebase}_{idx}_begin(server, ns)) != UA_STATUSCODE_GOOD) return retVal;".format(
-                outfilebase=outfilebase, idx=str(i)))
+            writec("retVal |= function_{outfilebase}_{idx}_begin(server, ns);". \
+                   format(outfilebase=outfilebase, idx=str(i)))
             if i in reftypes_functionNumbers:
-                writec("if((retVal = function_{outfilebase}_{idx}_finish(server, ns)) != UA_STATUSCODE_GOOD) return retVal;".format(
-                    outfilebase=outfilebase, idx=str(i)))
+                writec("retVal |= function_{outfilebase}_{idx}_finish(server, ns);". \
+                       format(outfilebase=outfilebase, idx=str(i)))
 
         for i in reversed(range(0, functionNumber)):
             if i in reftypes_functionNumbers:
                 continue
-            writec("if((retVal = function_{outfilebase}_{idx}_finish(server, ns)) != UA_STATUSCODE_GOOD) return retVal;".format(
-                outfilebase=outfilebase, idx=str(i)))
+            writec("retVal |= function_{outfilebase}_{idx}_finish(server, ns);". \
+                   format(outfilebase=outfilebase, idx=str(i)))
 
     writec("return retVal;\n}")
     outfileh.flush()

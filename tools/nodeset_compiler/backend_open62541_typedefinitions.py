@@ -129,8 +129,8 @@ class CGenerator(object):
         raise RuntimeError("Unknown datatype")
 
     def print_datatype(self, datatype, namespaceMap):
-        typeid = "{%s, %s}" % (namespaceMap[datatype.namespaceUri], getNodeidTypeAndId(datatype.nodeId))
-        binaryEncodingId = "{%s, %s}" % (namespaceMap[datatype.namespaceUri],
+        typeid = "{%s, %s}" % ("0", getNodeidTypeAndId(datatype.nodeId))
+        binaryEncodingId = "{%s, %s}" % ("0",
                                          getNodeidTypeAndId(datatype.binaryEncodingId))
         idName = makeCIdentifier(datatype.name)
         pointerfree = "true" if datatype.pointerfree else "false"
@@ -209,16 +209,16 @@ class CGenerator(object):
 
     def print_functions(self, datatype):
         idName = makeCIdentifier(datatype.name)
-        funcs = "static UA_INLINE void\nUA_%s_init(UA_%s *p) {\n    memset(p, 0, sizeof(UA_%s));\n}\n\n" % (
+        funcs = "UA_INLINABLE( void\nUA_%s_init(UA_%s *p) ,{\n    memset(p, 0, sizeof(UA_%s));\n})\n\n" % (
             idName, idName, idName)
-        funcs += "static UA_INLINE UA_%s *\nUA_%s_new(void) {\n    return (UA_%s*)UA_new(%s);\n}\n\n" % (
+        funcs += "UA_INLINABLE( UA_%s *\nUA_%s_new(void) ,{\n    return (UA_%s*)UA_new(%s);\n})\n\n" % (
             idName, idName, idName, CGenerator.print_datatype_ptr(datatype))
         if datatype.pointerfree == "true":
-            funcs += "static UA_INLINE UA_StatusCode\nUA_%s_copy(const UA_%s *src, UA_%s *dst) {\n    *dst = *src;\n    return UA_STATUSCODE_GOOD;\n}\n\n" % (
+            funcs += "UA_INLINABLE( UA_StatusCode\nUA_%s_copy(const UA_%s *src, UA_%s *dst) ,{\n    *dst = *src;\n    return UA_STATUSCODE_GOOD;\n})\n\n" % (
                 idName, idName, idName)
-            funcs += "UA_DEPRECATED static UA_INLINE void\nUA_%s_deleteMembers(UA_%s *p) {\n    memset(p, 0, sizeof(UA_%s));\n}\n\n" % (
+            funcs += "UA_DEPRECATED UA_INLINABLE( void\nUA_%s_deleteMembers(UA_%s *p) ,{\n    memset(p, 0, sizeof(UA_%s));\n})\n\n" % (
                 idName, idName, idName)
-            funcs += "static UA_INLINE void\nUA_%s_clear(UA_%s *p) {\n    memset(p, 0, sizeof(UA_%s));\n}\n\n" % (
+            funcs += "UA_INLINABLE( void\nUA_%s_clear(UA_%s *p) ,{\n    memset(p, 0, sizeof(UA_%s));\n})\n\n" % (
                 idName, idName, idName)
         else:
             for entry in whitelistFuncAttrWarnUnusedResult:
@@ -226,21 +226,23 @@ class CGenerator(object):
                     funcs += "UA_INTERNAL_FUNC_ATTR_WARN_UNUSED_RESULT "
                     break
 
-            funcs += "static UA_INLINE UA_StatusCode\nUA_%s_copy(const UA_%s *src, UA_%s *dst) {\n    return UA_copy(src, dst, %s);\n}\n\n" % (
+            funcs += "UA_INLINABLE( UA_StatusCode\nUA_%s_copy(const UA_%s *src, UA_%s *dst) ,{\n    return UA_copy(src, dst, %s);\n})\n\n" % (
                 idName, idName, idName, self.print_datatype_ptr(datatype))
-            funcs += "UA_DEPRECATED static UA_INLINE void\nUA_%s_deleteMembers(UA_%s *p) {\n    UA_clear(p, %s);\n}\n\n" % (
+            funcs += "UA_DEPRECATED UA_INLINABLE( void\nUA_%s_deleteMembers(UA_%s *p) ,{\n    UA_clear(p, %s);\n})\n\n" % (
                 idName, idName, self.print_datatype_ptr(datatype))
-            funcs += "static UA_INLINE void\nUA_%s_clear(UA_%s *p) {\n    UA_clear(p, %s);\n}\n\n" % (
+            funcs += "UA_INLINABLE( void\nUA_%s_clear(UA_%s *p) ,{\n    UA_clear(p, %s);\n})\n\n" % (
                 idName, idName, self.print_datatype_ptr(datatype))
-        funcs += "static UA_INLINE void\nUA_%s_delete(UA_%s *p) {\n    UA_delete(p, %s);\n}" % (
+        funcs += "UA_INLINABLE( void\nUA_%s_delete(UA_%s *p) ,{\n    UA_delete(p, %s);\n})" % (
             idName, idName, self.print_datatype_ptr(datatype))
+        funcs += "static UA_INLINE UA_Boolean\nUA_%s_equal(const UA_%s *p1, const UA_%s *p2) {\n    return (UA_order(p1, p2, %s) == UA_ORDER_EQ);\n}\n\n" % (
+            idName, idName, idName, self.print_datatype_ptr(datatype))
         return funcs
 
     def print_datatype_encoding(self, datatype):
         idName = makeCIdentifier(datatype.name)
-        enc = "static UA_INLINE size_t\nUA_%s_calcSizeBinary(const UA_%s *src) {\n    return UA_calcSizeBinary(src, %s);\n}\n"
-        enc += "static UA_INLINE UA_StatusCode\nUA_%s_encodeBinary(const UA_%s *src, UA_Byte **bufPos, const UA_Byte *bufEnd) {\n    return UA_encodeBinary(src, %s, bufPos, &bufEnd, NULL, NULL);\n}\n"
-        enc += "static UA_INLINE UA_StatusCode\nUA_%s_decodeBinary(const UA_ByteString *src, size_t *offset, UA_%s *dst) {\n    return UA_decodeBinary(src, offset, dst, %s, NULL);\n}"
+        enc = "UA_INLINABLE( size_t\nUA_%s_calcSizeBinary(const UA_%s *src) ,{\n    return UA_calcSizeBinary(src, %s);\n})\n"
+        enc += "UA_INLINABLE( UA_StatusCode\nUA_%s_encodeBinary(const UA_%s *src, UA_Byte **bufPos, const UA_Byte *bufEnd) ,{\n    return UA_encodeBinary(src, %s, bufPos, &bufEnd, NULL, NULL);\n})\n"
+        enc += "UA_INLINABLE( UA_StatusCode\nUA_%s_decodeBinary(const UA_ByteString *src, size_t *offset, UA_%s *dst) ,{\n    return UA_decodeBinary(src, offset, dst, %s, NULL);\n})"
         return enc % tuple(
             list(itertools.chain(*itertools.repeat([idName, idName, self.print_datatype_ptr(datatype)], 3))))
 
@@ -402,7 +404,12 @@ class CGenerator(object):
  * Autogenerated -- do not modify *
  **********************************/
 
-#include <open62541/types.h> /* Must be before the include guards */
+/* Must be before the include guards */
+#ifdef UA_ENABLE_AMALGAMATION
+# include "open62541.h"
+#else
+# include <open62541/types.h>
+#endif
 
 #ifndef ''' + self.parser.outname.upper() + '''_GENERATED_H_
 #define ''' + self.parser.outname.upper() + '''_GENERATED_H_
@@ -423,7 +430,7 @@ _UA_BEGIN_DECLS
         if totalCount > 0:
 
             self.printh(
-                "extern UA_EXPORT const UA_DataType UA_" + self.parser.outname.upper() + "[UA_" + self.parser.outname.upper() + "_COUNT];")
+                "extern UA_EXPORT UA_DataType UA_" + self.parser.outname.upper() + "[UA_" + self.parser.outname.upper() + "_COUNT];")
 
             for ns in self.filtered_types:
                 for i, t_name in enumerate(self.filtered_types[ns]):
@@ -499,7 +506,7 @@ _UA_END_DECLS
 
         if totalCount > 0:
             self.printc(
-                "const UA_DataType UA_%s[UA_%s_COUNT] = {" % (self.parser.outname.upper(), self.parser.outname.upper()))
+                "UA_DataType UA_%s[UA_%s_COUNT] = {" % (self.parser.outname.upper(), self.parser.outname.upper()))
 
             for ns in self.filtered_types:
                 for i, t_name in enumerate(self.filtered_types[ns]):

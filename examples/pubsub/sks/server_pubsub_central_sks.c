@@ -161,10 +161,8 @@ setSecurityGroupRolePermission(UA_Server *server, UA_NodeId securityGroupNodeId,
     if(!server && !nodeContext)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
 
-    UA_ByteString *username = UA_ByteString_new();
-    UA_String allowedUsername = UA_STRING((char *)nodeContext);
-    UA_ByteString_copy(&allowedUsername, username);
-    return UA_Server_setNodeContext(server, securityGroupNodeId, username);
+    UA_ByteString allowedUsername = UA_STRING((char *)nodeContext);
+    return UA_Server_setNodeContext(server, securityGroupNodeId, &allowedUsername);
 }
 
 UA_Boolean running = true;
@@ -415,15 +413,20 @@ main(int argc, char **argv) {
         &config, port, &certificate, &privateKey, NULL, 0, NULL, 0, NULL, 0);
     if(res != UA_STATUSCODE_GOOD)
         goto cleanup;
-    config.certificateVerification.clear(&config.certificateVerification);
 #ifdef UA_ENABLE_CERT_REJECTED_DIR
-    res = UA_CertificateVerification_CertFolders(&config.certificateVerification,
+    res |= UA_CertificateVerification_CertFolders(&config.secureChannelPKI,
+                                                  trustlistFolder, issuerlistFolder,
+                                                  revocationlistFolder, NULL);
+    res |= UA_CertificateVerification_CertFolders(&config.sessionPKI,
                                                  trustlistFolder, issuerlistFolder,
                                                  revocationlistFolder, NULL);
 #else
-    res = UA_CertificateVerification_CertFolders(&config.certificateVerification,
-                                                 trustlistFolder, issuerlistFolder,
-                                                 revocationlistFolder);
+    res |= UA_CertificateVerification_CertFolders(&config.secureChannelPKI,
+                                                  trustlistFolder, issuerlistFolder,
+                                                  revocationlistFolder);
+    res |= UA_CertificateVerification_CertFolders(&config.sessionPKI,
+                                                  trustlistFolder, issuerlistFolder,
+                                                  revocationlistFolder);
 #endif
     if(res != UA_STATUSCODE_GOOD)
         goto cleanup;
@@ -482,7 +485,7 @@ main(int argc, char **argv) {
         (UA_PubSubSecurityPolicy *)UA_malloc(sizeof(UA_PubSubSecurityPolicy));
     config.pubSubConfig.securityPoliciesSize = 1;
     UA_PubSubSecurityPolicy_Aes256Ctr(config.pubSubConfig.securityPolicies,
-                                      &config.logger);
+                                      config.logging);
 
     /* User Access Control */
     config.accessControl.getUserExecutableOnObject = getUserExecutableOnObject_sks;

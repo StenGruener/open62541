@@ -192,7 +192,6 @@ UA_Notification_delete(UA_Notification *n) {
 #ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
         case UA_ATTRIBUTEID_EVENTNOTIFIER:
             UA_EventFieldList_clear(&n->data.event);
-            UA_EventFilterResult_clear(&n->result);
             break;
 #endif
         default:
@@ -227,7 +226,7 @@ UA_Notification_enqueueMon(UA_Server *server, UA_Notification *n) {
      * adding the new Notification. */
     UA_MonitoredItem_ensureQueueSpace(server, mon);
 
-    UA_LOG_DEBUG_SUBSCRIPTION(&server->config.logger, mon->subscription,
+    UA_LOG_DEBUG_SUBSCRIPTION(server->config.logging, mon->subscription,
                               "MonitoredItem %" PRIi32 " | "
                               "Notification enqueued (Queue size %lu / %lu)",
                               mon->monitoredItemId,
@@ -235,7 +234,7 @@ UA_Notification_enqueueMon(UA_Server *server, UA_Notification *n) {
                               (long unsigned)mon->parameters.queueSize);
 }
 
-void
+static void
 UA_Notification_enqueueSub(UA_Notification *n) {
     UA_MonitoredItem *mon = n->mon;
     UA_assert(mon);
@@ -272,12 +271,14 @@ UA_Notification_enqueueAndTrigger(UA_Server *server, UA_Notification *n) {
      * and then into the MonitoredItem. UA_MonitoredItem_ensureQueueSpace
      * (called within UA_Notification_enqueueMon) assumes the notification is
      * already in the Subscription's publishing queue. */
+    UA_EventLoop *el = server->config.eventLoop;
+    UA_DateTime nowMonotonic = el->dateTime_nowMonotonic(el);
     if(mon->monitoringMode == UA_MONITORINGMODE_REPORTING ||
        (mon->monitoringMode == UA_MONITORINGMODE_SAMPLING &&
-        mon->triggeredUntil > UA_DateTime_nowMonotonic())) {
+        mon->triggeredUntil > nowMonotonic)) {
         UA_Notification_enqueueSub(n);
         mon->triggeredUntil = UA_INT64_MIN;
-        UA_LOG_DEBUG_SUBSCRIPTION(&server->config.logger, mon->subscription,
+        UA_LOG_DEBUG_SUBSCRIPTION(server->config.logging, mon->subscription,
                                   "Notification enqueued (Queue size %lu)",
                                   (long unsigned)mon->subscription->notificationQueueSize);
     }
@@ -311,12 +312,25 @@ UA_Notification_enqueueAndTrigger(UA_Server *server, UA_Notification *n) {
          * published as well. (Falsely) assume that the publishing cycle has
          * started right now, so that we don't have to loop over MonitoredItems
          * to deactivate the triggering after the publishing cycle. */
-        triggeredMon->triggeredUntil = UA_DateTime_nowMonotonic() +
+        triggeredMon->triggeredUntil = nowMonotonic +
             (UA_DateTime)(sub->publishingInterval * (UA_Double)UA_DATETIME_MSEC);
 
-        UA_LOG_DEBUG_SUBSCRIPTION(&server->config.logger, sub,
+        UA_LOG_DEBUG_SUBSCRIPTION(server->config.logging, sub,
                                   "MonitoredItem %u triggers MonitoredItem %u",
                                   mon->monitoredItemId, triggeredMon->monitoredItemId);
+    }
+
+    /* If we just enqueued a notification into the local adminSubscription, then
+     * register a delayed callback for "local publishing". */
+    if(sub == server->adminSubscription && !sub->delayedCallbackRegistered) {
+        sub->delayedCallbackRegistered = true;
+        sub->delayedMoreNotifications.callback =
+            (UA_Callback)UA_Subscription_localPublish;
+        sub->delayedMoreNotifications.application = server;
+        sub->delayedMoreNotifications.context = sub;
+
+        UA_EventLoop *el = server->config.eventLoop;
+        el->addDelayedCallback(el, &sub->delayedMoreNotifications);
     }
 }
 
@@ -422,34 +436,28 @@ removeMonitoredItemBackPointer(UA_Server *server, UA_Session *session,
 
 void
 UA_Server_registerMonitoredItem(UA_Server *server, UA_MonitoredItem *mon) {
+    UA_LOCK_ASSERT(&server->serviceMutex, 1);
+
     if(mon->registered)
         return;
 
     /* Register in Subscription and Server */
     UA_Subscription *sub = mon->subscription;
-    if(sub) {
-        mon->monitoredItemId = ++sub->lastMonitoredItemId;
-        mon->subscription = sub;
-        sub->monitoredItemsSize++;
-        LIST_INSERT_HEAD(&sub->monitoredItems, mon, listEntry);
-    } else {
-        mon->monitoredItemId = ++server->lastLocalMonitoredItemId;
-        LIST_INSERT_HEAD(&server->localMonitoredItems, mon, listEntry);
-    }
+    mon->monitoredItemId = ++sub->lastMonitoredItemId;
+    mon->subscription = sub;
+    LIST_INSERT_HEAD(&sub->monitoredItems, mon, listEntry);
+    sub->monitoredItemsSize++;
     server->monitoredItemsSize++;
 
     /* Register the MonitoredItem in userland */
     if(server->config.monitoredItemRegisterCallback) {
-        UA_Session *session = &server->adminSession;
-        if(sub)
-            session = sub->session;
-
+        UA_Session *session = sub->session;
         void *targetContext = NULL;
         getNodeContext(server, mon->itemToMonitor.nodeId, &targetContext);
         UA_UNLOCK(&server->serviceMutex);
         server->config.monitoredItemRegisterCallback(server,
                                                      session ? &session->sessionId : NULL,
-                                                     session ? session->sessionHandle : NULL,
+                                                     session ? session->context : NULL,
                                                      &mon->itemToMonitor.nodeId,
                                                      targetContext,
                                                      mon->itemToMonitor.attributeId, false);
@@ -461,11 +469,13 @@ UA_Server_registerMonitoredItem(UA_Server *server, UA_MonitoredItem *mon) {
 
 static void
 UA_Server_unregisterMonitoredItem(UA_Server *server, UA_MonitoredItem *mon) {
+    UA_LOCK_ASSERT(&server->serviceMutex, 1);
+
     if(!mon->registered)
         return;
 
     UA_Subscription *sub = mon->subscription;
-    UA_LOG_INFO_SUBSCRIPTION(&server->config.logger, sub,
+    UA_LOG_INFO_SUBSCRIPTION(server->config.logging, sub,
                              "MonitoredItem %" PRIi32 " | Deleting the MonitoredItem",
                              mon->monitoredItemId);
 
@@ -480,7 +490,7 @@ UA_Server_unregisterMonitoredItem(UA_Server *server, UA_MonitoredItem *mon) {
         UA_UNLOCK(&server->serviceMutex);
         server->config.monitoredItemRegisterCallback(server,
                                                      session ? &session->sessionId : NULL,
-                                                     session ? session->sessionHandle : NULL,
+                                                     session ? session->context : NULL,
                                                      &mon->itemToMonitor.nodeId,
                                                      targetContext,
                                                      mon->itemToMonitor.attributeId, true);
@@ -723,11 +733,10 @@ UA_MonitoredItem_registerSampling(UA_Server *server, UA_MonitoredItem *mon) {
         if(res == UA_STATUSCODE_GOOD)
             mon->samplingType = UA_MONITOREDITEMSAMPLINGTYPE_EVENT;
         return res;
-    } else if(mon->parameters.samplingInterval < 0.0) {
+    } else if(sub && mon->parameters.samplingInterval == sub->publishingInterval) {
         /* Add to the subscription for sampling before every publish */
-        if(!sub)
-            return UA_STATUSCODE_BADINTERNALERROR; /* Not possible for local MonitoredItems */
-        LIST_INSERT_HEAD(&sub->samplingMonitoredItems, mon, sampling.samplingListEntry);
+        LIST_INSERT_HEAD(&sub->samplingMonitoredItems, mon,
+                         sampling.subscriptionSampling);
         mon->samplingType = UA_MONITOREDITEMSAMPLINGTYPE_PUBLISH;
     } else {
         /* DataChange MonitoredItems with a positive sampling interval have a
@@ -767,7 +776,7 @@ UA_MonitoredItem_unregisterSampling(UA_Server *server, UA_MonitoredItem *mon) {
 
     case UA_MONITOREDITEMSAMPLINGTYPE_PUBLISH:
         /* Added to the subscription */
-        LIST_REMOVE(mon, sampling.samplingListEntry);
+        LIST_REMOVE(mon, sampling.subscriptionSampling);
         break;
 
     case UA_MONITOREDITEMSAMPLINGTYPE_NONE:

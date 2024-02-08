@@ -25,12 +25,13 @@
  */
 
 #include <open62541/plugin/log_stdout.h>
-#include <open62541/plugin/pubsub_ethernet.h>
-#include <open62541/plugin/pubsub_udp.h>
 #include <open62541/server.h>
+#include <open62541/server_pubsub.h>
 #include <open62541/server_config_default.h>
 
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 UA_NodeId connectionIdent, publishedDataSetIdent, writerGroupIdent;
 
@@ -125,7 +126,7 @@ addWriterGroup(UA_Server *server) {
                                                               (UA_UadpNetworkMessageContentMask)UA_UADPNETWORKMESSAGECONTENTMASK_PAYLOADHEADER);
     writerGroupConfig.messageSettings.content.decoded.data = writerGroupMessage;
     UA_Server_addWriterGroup(server, connectionIdent, &writerGroupConfig, &writerGroupIdent);
-    UA_Server_setWriterGroupOperational(server, writerGroupIdent);
+    UA_Server_enableWriterGroup(server, writerGroupIdent);
     UA_UadpWriterGroupMessageDataType_delete(writerGroupMessage);
 }
 
@@ -184,13 +185,6 @@ static int run(UA_String *transportProfile,
     UA_ServerConfig *config = UA_Server_getConfig(server);
     UA_ServerConfig_setDefault(config);
 
-    /* Details about the connection configuration and handling are located in
-     * the pubsub connection tutorial */
-    UA_ServerConfig_addPubSubTransportLayer(config, UA_PubSubTransportLayerUDPMP());
-#ifdef UA_ENABLE_PUBSUB_ETH_UADP
-    UA_ServerConfig_addPubSubTransportLayer(config, UA_PubSubTransportLayerEthernet());
-#endif
-
     addPubSubConnection(server, transportProfile, networkAddressUrl);
     addPublishedDataSet(server);
     addDataSetField(server);
@@ -230,12 +224,14 @@ int main(int argc, char **argv) {
                 printf("Error: UADP/ETH needs an interface name\n");
                 return EXIT_FAILURE;
             }
-            networkAddressUrl.networkInterface = UA_STRING(argv[2]);
             networkAddressUrl.url = UA_STRING(argv[1]);
         } else {
             printf("Error: unknown URI\n");
             return EXIT_FAILURE;
         }
+    }
+    if (argc > 2) {
+        networkAddressUrl.networkInterface = UA_STRING(argv[2]);
     }
 
 

@@ -10,18 +10,13 @@
  */
 
 #include <open62541/plugin/log_stdout.h>
-#include <open62541/plugin/pubsub_udp.h>
 #include <open62541/server.h>
+#include <open62541/server_pubsub.h>
 #include <open62541/server_config_default.h>
 
-#include "ua_pubsub.h"
-
-#ifdef UA_ENABLE_PUBSUB_ETH_UADP
-#include <open62541/plugin/pubsub_ethernet.h>
-#endif
-
-
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 UA_NodeId connectionIdentifier;
 UA_NodeId readerGroupIdentifier;
@@ -91,7 +86,6 @@ addPubSubConnection(UA_Server *server, UA_String *transportProfile,
         return UA_STATUSCODE_BADINTERNALERROR;
     }
 
-    UA_StatusCode retval = UA_STATUSCODE_GOOD;
     /* Configuration creation for the connection */
     UA_PubSubConnectionConfig connectionConfig;
     memset(&connectionConfig, 0, sizeof(UA_PubSubConnectionConfig));
@@ -101,13 +95,7 @@ addPubSubConnection(UA_Server *server, UA_String *transportProfile,
     UA_Variant_setScalar(&connectionConfig.address, networkAddressUrl,
                          &UA_TYPES[UA_TYPES_NETWORKADDRESSURLDATATYPE]);
     connectionConfig.publisherId.uint32 = UA_UInt32_random();
-    retval |=
-        UA_Server_addPubSubConnection(server, &connectionConfig, &connectionIdentifier);
-    if(retval != UA_STATUSCODE_GOOD) {
-        return retval;
-    }
-    retval |= UA_PubSubConnection_regist(server, &connectionIdentifier, NULL);
-    return retval;
+    return UA_Server_addPubSubConnection(server, &connectionConfig, &connectionIdentifier);
 }
 
 /* Add ReaderGroup to the created connection */
@@ -123,7 +111,7 @@ addReaderGroup(UA_Server *server) {
     readerGroupConfig.name = UA_STRING("ReaderGroup1");
     retval |= UA_Server_addReaderGroup(server, connectionIdentifier, &readerGroupConfig,
                                        &readerGroupIdentifier);
-    UA_Server_setReaderGroupOperational(server, readerGroupIdentifier);
+    UA_Server_enableReaderGroup(server, readerGroupIdentifier);
     return retval;
 }
 
@@ -175,13 +163,6 @@ run(UA_String *transportProfile, UA_NetworkAddressUrlDataType *networkAddressUrl
     UA_ServerConfig *config = UA_Server_getConfig(server);
     UA_ServerConfig_setDefault(config);
 
-    /* Details about the connection configuration and handling are located in
-     * the pubsub connection tutorial */
-    UA_ServerConfig_addPubSubTransportLayer(config, UA_PubSubTransportLayerUDPMP());
-    #ifdef UA_ENABLE_PUBSUB_ETH_UADP
-        UA_ServerConfig_addPubSubTransportLayer(config, UA_PubSubTransportLayerEthernet());
-    #endif
-
     addTargetVariable(server);
     addStandaloneSubscribedDataSet(server);
 
@@ -225,12 +206,14 @@ main(int argc, char **argv) {
                 return EXIT_FAILURE;
             }
 
-            networkAddressUrl.networkInterface = UA_STRING(argv[2]);
             networkAddressUrl.url = UA_STRING(argv[1]);
         } else {
             printf("Error: unknown URI\n");
             return EXIT_FAILURE;
         }
+    }
+    if (argc > 2) {
+        networkAddressUrl.networkInterface = UA_STRING(argv[2]);
     }
 
     return run(&transportProfile, &networkAddressUrl);

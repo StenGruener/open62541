@@ -499,8 +499,7 @@ resolveSimpleAttributeOperand(UA_Server *server, UA_Session *session,
 #endif
         }
 
-        v = UA_Server_readWithSession(server, session, &rvi,
-                                      UA_TIMESTAMPSTORETURN_NEITHER);
+        v = readWithSession(server, session, &rvi, UA_TIMESTAMPSTORETURN_NEITHER);
     } else {
         /* Resolve the browse path, starting from the event-source (and not the
          * typeDefinitionId). */
@@ -517,8 +516,7 @@ resolveSimpleAttributeOperand(UA_Server *server, UA_Session *session,
 
         /* Use the first match */
         rvi.nodeId = bpr.targets[0].targetId.nodeId;
-        v = UA_Server_readWithSession(server, session, &rvi,
-                                      UA_TIMESTAMPSTORETURN_NEITHER);
+        v = readWithSession(server, session, &rvi, UA_TIMESTAMPSTORETURN_NEITHER);
         UA_BrowsePathResult_clear(&bpr);
     }
 
@@ -603,7 +601,7 @@ ofTypeOperator(UA_FilterEvalContext *ctx, size_t index) {
     UA_CHECK_STATUS(res, return res);
 
     if(!UA_Variant_hasScalarType(&eventTypeVar, &UA_TYPES[UA_TYPES_NODEID])) {
-        UA_LOG_WARNING(&ctx->server->config.logger, UA_LOGCATEGORY_SERVER,
+        UA_LOG_WARNING(ctx->server->config.logging, UA_LOGCATEGORY_SERVER,
                        "EventType has an invalid type.");
         UA_Variant_clear(&eventTypeVar);
         return UA_STATUSCODE_BADINTERNALERROR;
@@ -864,14 +862,12 @@ inListOperator(UA_FilterEvalContext *ctx, size_t index) {
     UA_Variant *op1 = &ctx->stack[ctx->top++];
     UA_StatusCode res = resolveOperand(ctx, &elm->filterOperands[0], op0);
     UA_CHECK_STATUS(res, return res);
-    for(size_t i = 1; i < elm->filterOperandsSize; i++) {
+    for(size_t i = 1; i < elm->filterOperandsSize && !found; i++) {
         res = resolveOperand(ctx, &elm->filterOperands[i], op1);
-        UA_CHECK_STATUS(res, continue);
-        if(op0->type == op1->type &&
-           UA_order(op0->data, op1->data, op0->type) == UA_ORDER_EQ) {
+        if(res != UA_STATUSCODE_GOOD)
+            continue;
+        if(op0->type == op1->type && UA_equal(op0->data, op1->data, op0->type))
             found = true;
-            break;
-        }
         UA_Variant_clear(op1);
     }
     ctx->results[index] = t2v((found) ? UA_TERNARY_TRUE: UA_TERNARY_FALSE);
@@ -1050,7 +1046,7 @@ filterEvent(UA_Server *server, UA_Session *session,
     }
 
     /* Prepare content filter result structure */
-    if(filter->whereClause.elementsSize != 0) {
+    if(filter->whereClause.elementsSize > 0) {
         result->whereClauseResult.elementResultsSize = filter->whereClause.elementsSize;
         result->whereClauseResult.elementResults = (UA_ContentFilterElementResult *)
             UA_Array_new(filter->whereClause.elementsSize,
@@ -1060,13 +1056,15 @@ filterEvent(UA_Server *server, UA_Session *session,
             UA_EventFilterResult_clear(result);
             return UA_STATUSCODE_BADOUTOFMEMORY;
         }
-        for(size_t i = 0; i < result->whereClauseResult.elementResultsSize; ++i) {
-            result->whereClauseResult.elementResults[i].operandStatusCodesSize =
-            filter->whereClause.elements->filterOperandsSize;
-            result->whereClauseResult.elementResults[i].operandStatusCodes = (UA_StatusCode *)
-                UA_Array_new(filter->whereClause.elements->filterOperandsSize,
-                             &UA_TYPES[UA_TYPES_STATUSCODE]);
-            if(!result->whereClauseResult.elementResults[i].operandStatusCodes) {
+
+        for(size_t i = 0; i < filter->whereClause.elementsSize; ++i) {
+            UA_ContentFilterElementResult *er =
+                &result->whereClauseResult.elementResults[i];
+            UA_ContentFilterElement *cf = &filter->whereClause.elements[i];
+            er->operandStatusCodesSize = cf->filterOperandsSize;
+            er->operandStatusCodes = (UA_StatusCode *)
+                UA_Array_new(er->operandStatusCodesSize, &UA_TYPES[UA_TYPES_STATUSCODE]);
+            if(!er->operandStatusCodes) {
                 UA_EventFieldList_clear(efl);
                 UA_EventFilterResult_clear(result);
                 return UA_STATUSCODE_BADOUTOFMEMORY;
@@ -1075,7 +1073,8 @@ filterEvent(UA_Server *server, UA_Session *session,
     }
 
     /* Evaluate the where filter. Do we event need to consider the event? */
-    UA_StatusCode res = evaluateWhereClause(server, session, eventNode, &filter->whereClause,
+    UA_StatusCode res = evaluateWhereClause(server, session, eventNode,
+                                            &filter->whereClause,
                                             &result->whereClauseResult);
     if(res != UA_STATUSCODE_GOOD){
         UA_EventFieldList_clear(efl);
@@ -1086,13 +1085,15 @@ filterEvent(UA_Server *server, UA_Session *session,
     /* Apply the select filter */
     UA_NodeId baseEventTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_BASEEVENTTYPE);
     for(size_t i = 0; i < filter->selectClausesSize; i++) {
+        UA_SimpleAttributeOperand *sc = &filter->selectClauses[i];
         /* Check if the browsePath is BaseEventType, in which case nothing more
          * needs to be checked */
-        if(!UA_NodeId_equal(&filter->selectClauses[i].typeDefinitionId, &baseEventTypeId) &&
-           !isValidEvent(server, &filter->selectClauses[i].typeDefinitionId, eventNode)) {
+        if(!UA_NodeId_equal(&sc->typeDefinitionId, &baseEventTypeId) &&
+           !isValidEvent(server, &sc->typeDefinitionId, eventNode)) {
             UA_Variant_init(&efl->eventFields[i]);
             /* EventFilterResult currently isn't being used
-            notification->result.selectClauseResults[i] = UA_STATUSCODE_BADTYPEDEFINITIONINVALID; */
+               notification->result.selectClauseResults[i] =
+                   UA_STATUSCODE_BADTYPEDEFINITIONINVALID; */
             continue;
         }
 
@@ -1100,7 +1101,7 @@ filterEvent(UA_Server *server, UA_Session *session,
          * select-field cannot be resolved. */
         result->selectClauseResults[i] =
             resolveSimpleAttributeOperand(server, session, eventNode,
-                                          &filter->selectClauses[i], &efl->eventFields[i]);
+                                          sc, &efl->eventFields[i]);
     }
 
     return UA_STATUSCODE_GOOD;
@@ -1119,7 +1120,7 @@ filterEvent(UA_Server *server, UA_Session *session,
  * - Check if attributeId is value */
 UA_StatusCode
 UA_SimpleAttributeOperandValidation(UA_Server *server,
-                                    UA_SimpleAttributeOperand *sao) {
+                                    const UA_SimpleAttributeOperand *sao) {
     /* TypeDefinition is not NULL? */
     if(UA_NodeId_isNull(&sao->typeDefinitionId))
         return UA_STATUSCODE_BADTYPEDEFINITIONINVALID;
@@ -1189,9 +1190,13 @@ UA_SimpleAttributeOperandValidation(UA_Server *server,
     return UA_STATUSCODE_GOOD;
 }
 
-static UA_ContentFilterElementResult
+/* Initial content filter (where clause) check. Current checks:
+ * - Number of operands for each (supported) operator
+ * - ElementOperands point forward only */
+UA_ContentFilterElementResult
 UA_ContentFilterElementValidation(UA_Server *server, size_t operatorIndex,
-                                  size_t operatorsCount, UA_ContentFilterElement *ef) {
+                                  size_t operatorsCount,
+                                  const UA_ContentFilterElement *ef) {
     /* Initialize the result structure */
     UA_ContentFilterElementResult er;
     UA_ContentFilterElementResult_init(&er);
@@ -1308,38 +1313,6 @@ UA_ContentFilterElementValidation(UA_Server *server, size_t operatorIndex,
             break;
     }
     return er;
-}
-
-/* Initial content filter (where clause) check. Current checks:
- * - Number of operands for each (supported) operator
- * - ElementOperands point forward only */
-UA_StatusCode
-UA_ContentFilterValidation(UA_Server *server, const UA_ContentFilter *filter,
-                           UA_ContentFilterResult *result) {
-    UA_ContentFilterResult_init(result);
-    if(filter->elementsSize == 0)
-        return UA_STATUSCODE_GOOD;
-
-    if(filter->elementsSize > UA_EVENTFILTER_MAXELEMENTS)
-        return UA_STATUSCODE_BADEVENTFILTERINVALID;
-
-    /* Allocate memory for the results */
-    result->elementResults = (UA_ContentFilterElementResult *)
-        UA_Array_new(filter->elementsSize, &UA_TYPES[UA_TYPES_CONTENTFILTERELEMENTRESULT]);
-    if(!result->elementResults)
-        return UA_STATUSCODE_BADOUTOFMEMORY;
-    result->elementResultsSize = filter->elementsSize;
-
-    /* Validate the filter elements individually */
-    for(size_t i = 0; i < filter->elementsSize; ++i) {
-        UA_ContentFilterElement *ef = &filter->elements[i];
-        result->elementResults[i] =
-            UA_ContentFilterElementValidation(server, i, filter->elementsSize, ef);
-        if(result->elementResults[i].statusCode != UA_STATUSCODE_GOOD)
-            return result->elementResults[i].statusCode;
-    }
-
-    return UA_STATUSCODE_GOOD;
 }
 
 #endif /* UA_ENABLE_SUBSCRIPTIONS_EVENTS */

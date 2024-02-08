@@ -121,7 +121,7 @@ void Service_RegisterServer2(UA_Server *server, UA_Session *session,
  * Open or renew a SecureChannel that can be used to ensure Confidentiality and
  * Integrity for Message exchange during a Session. */
 void Service_OpenSecureChannel(UA_Server *server, UA_SecureChannel* channel,
-                               const UA_OpenSecureChannelRequest *request,
+                               UA_OpenSecureChannelRequest *request,
                                UA_OpenSecureChannelResponse *response);
 
 /**
@@ -172,7 +172,9 @@ void Service_CloseSession(UA_Server *server, UA_SecureChannel *channel,
  * ^^^^^^^^^^^^^^
  * Used to cancel outstanding Service requests. Successfully cancelled service
  * requests shall respond with Bad_RequestCancelledByClient. */
-/* Not Implemented */
+void Service_Cancel(UA_Server *server, UA_Session *session,
+                    const UA_CancelRequest *request,
+                    UA_CancelResponse *response);
 
 /**
  * NodeManagement Service Set

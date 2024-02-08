@@ -150,7 +150,7 @@ asym_decrypt_sp_basic256(Basic256_ChannelContext *cc,
     if(cc == NULL || data == NULL)
         return UA_STATUSCODE_BADINTERNALERROR;
     return mbedtls_decrypt_rsaOaep(&cc->policyContext->localPrivateKey,
-                                   &cc->policyContext->drbgContext, data);
+                                   &cc->policyContext->drbgContext, data, MBEDTLS_MD_SHA1);
 }
 
 static size_t
@@ -669,6 +669,7 @@ UA_SecurityPolicy_Basic256(UA_SecurityPolicy *policy, const UA_ByteString localC
     policy->logger = logger;
 
     policy->policyUri = UA_STRING("http://opcfoundation.org/UA/SecurityPolicy#Basic256\0");
+    policy->securityLevel = 0;
 
     UA_SecurityPolicyAsymmetricModule *const asymmetricModule = &policy->asymmetricModule;
     UA_SecurityPolicySymmetricModule *const symmetricModule = &policy->symmetricModule;

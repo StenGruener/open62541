@@ -11,7 +11,7 @@
 
 #include <open62541/types.h>
 
-#include "ua_util_internal.h"
+#include "util/ua_util_internal.h"
 
 #include "../deps/cj5.h"
 
@@ -59,8 +59,8 @@ UA_StatusCode writeJsonBeforeElement(CtxJson *ctx, UA_Boolean distinct);
 typedef struct {
     const char *json5;
     cj5_token *tokens;
-    unsigned int tokensSize;
-    unsigned int index;
+    size_t tokensSize;
+    size_t index;
     UA_Byte depth;
 
     size_t namespacesSize;

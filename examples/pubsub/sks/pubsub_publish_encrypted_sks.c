@@ -8,10 +8,9 @@
 #include <open62541/client.h>
 #include <open62541/client_config_default.h>
 #include <open62541/plugin/log_stdout.h>
-#include <open62541/plugin/pubsub_ethernet.h>
-#include <open62541/plugin/pubsub_udp.h>
 #include <open62541/plugin/securitypolicy_default.h>
 #include <open62541/server.h>
+#include <open62541/server_pubsub.h>
 #include <open62541/server_config_default.h>
 
 #include <signal.h>
@@ -75,8 +74,8 @@ static void
 sksPullRequestCallback(UA_Server *server, UA_StatusCode sksPullRequestStatus, void *data) {
     UA_PubSubState state = UA_PUBSUBSTATE_OPERATIONAL;
     UA_Server_WriterGroup_getState(server, writerGroupIdent, &state);
-    if(sksPullRequestStatus == UA_STATUSCODE_GOOD && state == UA_PUBSUBSTATE_DISABLED)
-        UA_Server_setWriterGroupOperational(server, writerGroupIdent);
+    if(sksPullRequestStatus == UA_STATUSCODE_GOOD && state == UA_PUBSUBSTATE_PREOPERATIONAL)
+        UA_Server_setWriterGroupActivateKey(server, writerGroupIdent);
 }
 
 static void
@@ -113,6 +112,7 @@ addWriterGroup(UA_Server *server, UA_ClientConfig *sksClientConfig) {
     writerGroupConfig.messageSettings.content.decoded.data = writerGroupMessage;
     UA_Server_addWriterGroup(server, connectionIdent, &writerGroupConfig,
                              &writerGroupIdent);
+    UA_Server_enableWriterGroup(server, writerGroupIdent);
     UA_UadpWriterGroupMessageDataType_delete(writerGroupMessage);
 
     /* We need to set the sks client before setting Reader/Writer Group into operational
@@ -153,9 +153,8 @@ run(UA_UInt16 port, UA_String *transportProfile,
         (UA_PubSubSecurityPolicy *)UA_malloc(sizeof(UA_PubSubSecurityPolicy));
     config->pubSubConfig.securityPoliciesSize = 1;
     UA_PubSubSecurityPolicy_Aes256Ctr(config->pubSubConfig.securityPolicies,
-                                      &config->logger);
+                                      config->logging);
 
-    UA_ServerConfig_addPubSubTransportLayer(config, UA_PubSubTransportLayerUDPMP());
     addPubSubConnection(server, transportProfile, networkAddressUrl);
     addPublishedDataSet(server);
     addDataSetField(server);
@@ -163,7 +162,8 @@ run(UA_UInt16 port, UA_String *transportProfile,
     addDataSetWriter(server);
 
     UA_StatusCode retval = UA_Server_run(server, &running);
-
+    
+    UA_ClientConfig_delete(sksClientConfig);
     UA_Server_delete(server);
     return retval == UA_STATUSCODE_GOOD ? EXIT_SUCCESS : EXIT_FAILURE;
 }

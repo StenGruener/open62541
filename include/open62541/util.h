@@ -15,6 +15,20 @@
 _UA_BEGIN_DECLS
 
 /**
+ * Range Definition
+ * ---------------- */
+
+typedef struct {
+    UA_UInt32 min;
+    UA_UInt32 max;
+} UA_UInt32Range;
+
+typedef struct {
+    UA_Duration min;
+    UA_Duration max;
+} UA_DurationRange;
+
+/**
  * Random Number Generator
  * -----------------------
  * If UA_MULTITHREADING is defined, then the seed is stored in thread
@@ -106,6 +120,44 @@ UA_EXPORT UA_StatusCode
 UA_KeyValueMap_merge(UA_KeyValueMap *lhs, const UA_KeyValueMap *rhs);
 
 /**
+ * Binary Connection Config Parameters
+ * ----------------------------------- */
+
+typedef struct {
+    UA_UInt32 protocolVersion;
+    UA_UInt32 recvBufferSize;
+    UA_UInt32 sendBufferSize;
+    UA_UInt32 localMaxMessageSize;  /* (0 = unbounded) */
+    UA_UInt32 remoteMaxMessageSize; /* (0 = unbounded) */
+    UA_UInt32 localMaxChunkCount;   /* (0 = unbounded) */
+    UA_UInt32 remoteMaxChunkCount;  /* (0 = unbounded) */
+} UA_ConnectionConfig;
+
+/**
+ * .. _default-node-attributes:
+ *
+ * Default Node Attributes
+ * -----------------------
+ * Default node attributes to simplify the use of the AddNodes services. For
+ * example, Setting the ValueRank and AccessLevel to zero is often an unintended
+ * setting and leads to errors that are hard to track down. */
+
+/* The default for variables is "BaseDataType" for the datatype, -2 for the
+ * valuerank and a read-accesslevel. */
+UA_EXPORT extern const UA_VariableAttributes UA_VariableAttributes_default;
+UA_EXPORT extern const UA_VariableTypeAttributes UA_VariableTypeAttributes_default;
+
+/* Methods are executable by default */
+UA_EXPORT extern const UA_MethodAttributes UA_MethodAttributes_default;
+
+/* The remaining attribute definitions are currently all zeroed out */
+UA_EXPORT extern const UA_ObjectAttributes UA_ObjectAttributes_default;
+UA_EXPORT extern const UA_ObjectTypeAttributes UA_ObjectTypeAttributes_default;
+UA_EXPORT extern const UA_ReferenceTypeAttributes UA_ReferenceTypeAttributes_default;
+UA_EXPORT extern const UA_DataTypeAttributes UA_DataTypeAttributes_default;
+UA_EXPORT extern const UA_ViewAttributes UA_ViewAttributes_default;
+
+/**
  * Endpoint URL Parser
  * -------------------
  * The endpoint URL parser is generally useful for the implementation of network
@@ -167,34 +219,53 @@ UA_readNumberWithBase(const UA_Byte *buf, size_t buflen,
 #endif
 
 /**
+ * And-Escaping of Strings
+ * -----------------------
+ * The "and-escaping" of strings for is described in Part 4, A2. The ``&``
+ * character is used to escape the reserved characters ``/.<>:#!&``.
+ * So the string ``My.String`` becomes ``My&.String``.
+ *
+ * In addition to the standard we define "extended-and-escaping" where
+ * additionaly commas, square brackets and whitespace characters are escaped.
+ * This improves the parsing in a larger context, as a lexer can find the end of
+ * the escaped string. The reserved characters for the extended escaping (in
+ * addition to the above escape-characters) are ``,[] \t\n\v\f\r``.
+ *
+ * This documentation always states whether "and-escaping" or the
+ * "extended-and-escaping is used.
+ *
  * Parse RelativePath Expressions
  * ------------------------------
- *
  * Parse a RelativePath according to the format defined in Part 4, A2. This is
- * used e.g. for the BrowsePath structure. For now, only the standard
- * ReferenceTypes from Namespace 0 are recognized (see Part 3).
+ * used e.g. for the BrowsePath structure.
  *
- *   ``RelativePath := ( ReferenceType [BrowseName]? )*``
+ *   ``RelativePath := ( ReferenceType BrowseName )+``
  *
- * The ReferenceTypes have either of the following formats:
+ * The ReferenceType has one of the following formats:
  *
  * - ``/``: *HierarchicalReferences* and subtypes
- * - ``.``: *Aggregates* ReferenceTypesand subtypes
- * - ``< [!#]* BrowseName >``: The ReferenceType is indicated by its BrowseName
- *   (a QualifiedName). Prefixed modifiers can be as follows: ``!`` switches to
- *   inverse References. ``#`` excludes subtypes of the ReferenceType.
+ * - ``.``: *Aggregates* ReferenceTypes and subtypes
  *
- * QualifiedNames consist of an optional NamespaceIndex and the nameitself:
+ * - ``< [!#]* BrowseName >``: The ReferenceType is indicated by its BrowseName.
+ *   Reserved characters in the BrowseName are and-escaped. The following
+ *   prefix-modifiers are defined for the ReferenceType.
+ *   - ``!`` switches to inverse References
+ *   - ``#`` excludes subtypes of the ReferenceType.
+ *   - As a non-standard extension we allow the ReferenceType in angle-brackets
+ *     as a NodeId. For example ``<ns=1;i=345>``. If a string NodeId is used,
+ *     the string identifier is and-escaped.
  *
- *   ``QualifiedName := ([0-9]+ ":")? Name``
+ * The BrowseName is a QualifiedName. It consist of an optional NamespaceIndex
+ * and the name itself. The NamespaceIndex can be left out for the default
+ * Namespace zero. The name component is and-escaped (see above).
  *
- * The QualifiedName representation for RelativePaths uses ``&`` as the escape
- * character. Occurences of the characters ``/.<>:#!&`` in a QualifiedName have
- * to be escaped (prefixed with ``&``).
+ *   ``BrowseName := ([0-9]+ ":")? Name``
+ *
+ * The last BrowseName in a RelativePath can be omitted. This acts as a wildcard
+ * that matches any BrowseName.
  *
  * Example RelativePaths
  * `````````````````````
- *
  * - ``/2:Block&.Output``
  * - ``/3:Truck.0:NodeVersion``
  * - ``<0:HasProperty>1:Boiler/1:HeatSensor``
@@ -203,9 +274,22 @@ UA_readNumberWithBase(const UA_Byte *buf, size_t buflen,
  * - ``<!HasChild>Truck``
  * - ``<HasChild>``
  */
+
 #ifdef UA_ENABLE_PARSING
 UA_EXPORT UA_StatusCode
 UA_RelativePath_parse(UA_RelativePath *rp, const UA_String str);
+
+/* Supports the lookup of non-standard ReferenceTypes by their browse name in
+ * the information model of a server. The first matching result in the
+ * ReferenceType hierarchy is used. */
+UA_EXPORT UA_StatusCode
+UA_RelativePath_parseWithServer(UA_Server *server, UA_RelativePath *rp,
+                                const UA_String str);
+
+/* The out-string can be pre-allocated. Then the size is adjusted or an error
+ * returned. If the out-string is NULL, then memory is allocated for it. */
+UA_EXPORT UA_StatusCode
+UA_RelativePath_print(const UA_RelativePath *rp, UA_String *out);
 #endif
 
 /**
@@ -221,22 +305,19 @@ UA_RelativePath_parse(UA_RelativePath *rp, const UA_String str);
 #define UA_PRINTF_STRING_DATA(STRING) (int)(STRING).length, (STRING).data
 
 /**
- * Helper functions for converting data types
- * ------------------------------------------ */
+ * Cryptography Helpers
+ * -------------------- */
 
 /* Compare memory in constant time to mitigate timing attacks.
  * Returns true if ptr1 and ptr2 are equal for length bytes. */
-static UA_INLINE UA_Boolean
-UA_constantTimeEqual(const void *ptr1, const void *ptr2, size_t length) {
-    volatile const UA_Byte *a = (volatile const UA_Byte *)ptr1;
-    volatile const UA_Byte *b = (volatile const UA_Byte *)ptr2;
-    volatile UA_Byte c = 0;
-    for(size_t i = 0; i < length; ++i) {
-        UA_Byte x = a[i], y = b[i];
-        c = c | (x ^ y);
-    }
-    return !c;
-}
+UA_EXPORT UA_Boolean
+UA_constantTimeEqual(const void *ptr1, const void *ptr2, size_t length);
+
+/* Zero-out memory in a way that is not removed by compiler-optimizations. Use
+ * this to ensure cryptographic secrets don't leave traces after the memory was
+ * freed. */
+UA_EXPORT void
+UA_ByteString_memZero(UA_ByteString *bs);
 
 _UA_END_DECLS
 

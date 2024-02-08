@@ -10,7 +10,9 @@
 #include "server/ua_subscription.h"
 
 #include <check.h>
+#include <stdlib.h>
 
+#include "test_helpers.h"
 #include "testing_clock.h"
 
 static UA_Server *server = NULL;
@@ -41,10 +43,9 @@ createSession(void) {
 }
 
 static void setup(void) {
-    server = UA_Server_new();
+    server = UA_Server_newForUnitTest();
     ck_assert(server != NULL);
     UA_ServerConfig *config = UA_Server_getConfig(server);
-    UA_ServerConfig_setDefault(config);
     config->monitoredItemRegisterCallback = monitoredRegisterCallback;
     UA_Server_run_startup(server);
     createSession();
@@ -845,7 +846,7 @@ START_TEST(Server_negativeSamplingInterval) {
     ck_assert_uint_eq(response.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(response.resultsSize, 1);
     ck_assert_uint_eq(response.results[0].statusCode, UA_STATUSCODE_GOOD);
-    ck_assert(response.results[0].revisedSamplingInterval == -1.0);
+    ck_assert(response.results[0].revisedSamplingInterval > 0.0);
 
     UA_MonitoredItemCreateRequest_clear(&item);
     UA_CreateMonitoredItemsResponse_clear(&response);

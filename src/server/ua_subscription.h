@@ -23,8 +23,7 @@
 #include <open62541/plugin/nodestore.h>
 
 #include "ua_session.h"
-#include "common/ua_timer.h"
-#include "ua_util_internal.h"
+#include "util/ua_util_internal.h"
 
 _UA_BEGIN_DECLS
 
@@ -63,7 +62,6 @@ typedef struct UA_Notification {
 
 #ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
     UA_Boolean isOverflowEvent; /* Counted manually */
-    UA_EventFilterResult result;
 #endif
 } UA_Notification;
 
@@ -118,7 +116,7 @@ typedef enum {
 struct UA_MonitoredItem {
     UA_DelayedCallback delayedFreePointers;
     LIST_ENTRY(UA_MonitoredItem) listEntry; /* Linked list in the Subscription */
-    UA_Subscription *subscription; /* If NULL, then this is a Local MonitoredItem */
+    UA_Subscription *subscription;          /* Always non-NULL */
     UA_UInt32 monitoredItemId;
 
     /* Status and Settings */
@@ -153,8 +151,8 @@ struct UA_MonitoredItem {
     union {
         UA_UInt64 callbackId;
         UA_MonitoredItem *nodeListNext; /* Event-Based: Attached to Node */
-        LIST_ENTRY(UA_MonitoredItem) samplingListEntry; /* Publish-interval: Linked in
-                                                         * Subscription */
+        LIST_ENTRY(UA_MonitoredItem) subscriptionSampling; /* Linked to publish
+                                                            * interval */
     } sampling;
     UA_DataValue lastValue;
 
@@ -171,15 +169,10 @@ struct UA_MonitoredItem {
 };
 
 void UA_MonitoredItem_init(UA_MonitoredItem *mon);
-
-void
-UA_MonitoredItem_delete(UA_Server *server, UA_MonitoredItem *monitoredItem);
-
-void
-UA_MonitoredItem_removeOverflowInfoBits(UA_MonitoredItem *mon);
-
-void
-UA_Server_registerMonitoredItem(UA_Server *server, UA_MonitoredItem *mon);
+void UA_MonitoredItem_delete(UA_Server *server, UA_MonitoredItem *mon);
+void UA_MonitoredItem_removeOverflowInfoBits(UA_MonitoredItem *mon);
+void UA_MonitoredItem_sampleCallback(UA_Server *server, UA_MonitoredItem *mon);
+void UA_Server_registerMonitoredItem(UA_Server *server, UA_MonitoredItem *mon);
 
 /* Register sampling. Either by adding a repeated callback or by adding the
  * MonitoredItem to a linked list in the node. */
@@ -187,20 +180,17 @@ UA_StatusCode
 UA_MonitoredItem_registerSampling(UA_Server *server, UA_MonitoredItem *mon);
 
 void
-UA_MonitoredItem_unregisterSampling(UA_Server *server,
-                                    UA_MonitoredItem *mon);
+UA_MonitoredItem_unregisterSampling(UA_Server *server, UA_MonitoredItem *mon);
 
 UA_StatusCode
 UA_MonitoredItem_setMonitoringMode(UA_Server *server, UA_MonitoredItem *mon,
                                    UA_MonitoringMode monitoringMode);
 
-void
-UA_MonitoredItem_sampleCallback(UA_Server *server,
-                                UA_MonitoredItem *monitoredItem);
 
-UA_StatusCode
-sampleCallbackWithValue(UA_Server *server, UA_Subscription *sub,
-                        UA_MonitoredItem *mon, UA_DataValue *value);
+/* Do not use the value after calling this. It will be moved to mon or freed. */
+void
+UA_MonitoredItem_processSampledValue(UA_Server *server, UA_MonitoredItem *mon,
+                                     UA_DataValue *value);
 
 UA_StatusCode
 UA_MonitoredItem_removeLink(UA_Subscription *sub, UA_MonitoredItem *mon,
@@ -211,15 +201,12 @@ UA_MonitoredItem_addLink(UA_Subscription *sub, UA_MonitoredItem *mon,
                          UA_UInt32 linkId);
 
 UA_StatusCode
-UA_MonitoredItem_createDataChangeNotification(UA_Server *server,
-                                              UA_Subscription *sub,
-                                              UA_MonitoredItem *mon,
+UA_MonitoredItem_createDataChangeNotification(UA_Server *server, UA_MonitoredItem *mon,
                                               const UA_DataValue *value);
 
 /* Remove entries until mon->maxQueueSize is reached. Sets infobits for lost
  * data if required. */
-void
-UA_MonitoredItem_ensureQueueSpace(UA_Server *server, UA_MonitoredItem *mon);
+void UA_MonitoredItem_ensureQueueSpace(UA_Server *server, UA_MonitoredItem *mon);
 
 /****************/
 /* Subscription */
@@ -227,11 +214,10 @@ UA_MonitoredItem_ensureQueueSpace(UA_Server *server, UA_MonitoredItem *mon);
 
 /* We use only a subset of the states defined in the standard */
 typedef enum {
-    /* UA_SUBSCRIPTIONSTATE_CLOSED */
-    /* UA_SUBSCRIPTIONSTATE_CREATING */
-    UA_SUBSCRIPTIONSTATE_NORMAL,
-    UA_SUBSCRIPTIONSTATE_LATE,
-    UA_SUBSCRIPTIONSTATE_KEEPALIVE
+    UA_SUBSCRIPTIONSTATE_STOPPED = 0,
+    UA_SUBSCRIPTIONSTATE_REMOVING,
+    UA_SUBSCRIPTIONSTATE_ENABLED_NOPUBLISH, /* only keepalive */
+    UA_SUBSCRIPTIONSTATE_ENABLED
 } UA_SubscriptionState;
 
 /* Subscriptions are managed in a server-wide linked list. If they are attached
@@ -253,11 +239,11 @@ struct UA_Subscription {
     UA_UInt32 maxKeepAliveCount;
     UA_Double publishingInterval; /* in ms */
     UA_UInt32 notificationsPerPublish;
-    UA_Boolean publishingEnabled;
     UA_Byte priority;
 
     /* Runtime information */
     UA_SubscriptionState state;
+    UA_Boolean late;
     UA_StatusCode statusChange; /* If set, a notification is generated and the
                                  * Subscription is deleted within
                                  * UA_Subscription_publish. */
@@ -294,6 +280,8 @@ struct UA_Subscription {
     /* Statistics for the server diagnostics. The fields are defined according
      * to the SubscriptionDiagnosticsDataType (Part 5, §12.15). */
 #ifdef UA_ENABLE_DIAGNOSTICS
+    UA_NodeId ns0Id; /* Representation in the Session object */
+
     UA_UInt32 modifyCount;
     UA_UInt32 enableCount;
     UA_UInt32 disableCount;
@@ -319,12 +307,11 @@ void
 UA_Subscription_delete(UA_Server *server, UA_Subscription *sub);
 
 UA_StatusCode
-Subscription_registerPublishCallback(UA_Server *server,
-                                     UA_Subscription *sub);
+Subscription_setState(UA_Server *server, UA_Subscription *sub,
+                      UA_SubscriptionState state);
 
 void
-Subscription_unregisterPublishCallback(UA_Server *server,
-                                       UA_Subscription *sub);
+Subscription_resetLifetime(UA_Subscription *sub);
 
 UA_MonitoredItem *
 UA_Subscription_getMonitoredItem(UA_Subscription *sub,
@@ -333,12 +320,18 @@ UA_Subscription_getMonitoredItem(UA_Subscription *sub,
 void
 UA_Subscription_publish(UA_Server *server, UA_Subscription *sub);
 
+void
+UA_Subscription_localPublish(UA_Server *server, UA_Subscription *sub);
+
+void
+UA_Subscription_resendData(UA_Server *server, UA_Subscription *sub);
+
 UA_StatusCode
 UA_Subscription_removeRetransmissionMessage(UA_Subscription *sub,
                                             UA_UInt32 sequenceNumber);
 
-UA_Boolean
-UA_Session_reachedPublishReqLimit(UA_Server *server, UA_Session *session);
+void
+UA_Session_ensurePublishQueueSpace(UA_Server *server, UA_Session *session);
 
 /* Forward declaration for A&C used in ua_server_internal.h" */
 struct UA_ConditionSource;
@@ -361,13 +354,13 @@ generateEventId(UA_ByteString *generatedId);
 /* Static validation when the filter is registered */
 UA_StatusCode
 UA_SimpleAttributeOperandValidation(UA_Server *server,
-                                    UA_SimpleAttributeOperand *sao);
+                                    const UA_SimpleAttributeOperand *sao);
 
 /* Static validation when the filter is registered */
-UA_StatusCode
-UA_ContentFilterValidation(UA_Server *server,
-                           const UA_ContentFilter *filter,
-                           UA_ContentFilterResult *result);
+UA_ContentFilterElementResult
+UA_ContentFilterElementValidation(UA_Server *server, size_t operatorIndex,
+                                  size_t operatorsCount,
+                                  const UA_ContentFilterElement *ef);
 
 /* Evaluate content filter, exported only for unit testing */
 UA_StatusCode
