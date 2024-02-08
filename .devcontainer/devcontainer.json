@@ -5,7 +5,11 @@
 	"customizations": {
 		"vscode": {  
 			"settings": { 
-				"terminal.integrated.shell.linux": "/bin/bash"
+				"terminal.integrated.shell.linux": "/bin/bash",
+				"cmake.generator": "Unix Makefiles",
+				"cmake.preferredGenerators": [
+				    "Unix Makefiles"
+				]
 			},
 			"extensions": [
 				"ms-vscode.cpptools"
